@@ -2,10 +2,18 @@
 Data Pipeline: Feature Extraction using MediaPipe Holistic
 
 Extracts comprehensive landmark data from video frames:
-- Hand landmarks (21 keypoints per hand)
-- Facial landmarks (468 keypoints)
-- Body landmarks (33 keypoints)
-- Pose and orientation information
+- Hand landmarks (21 keypoints per hand, 2 hands = 42 total)
+- Facial landmarks (468 keypoints for non-manual markers/facial expressions)
+- Body landmarks (33 keypoints for pose and orientation)
+
+Enhanced with support for full 468-point face detection to capture
+non-manual markers crucial for multilingual sign language grammar.
+
+Keypoint dimensions:
+- Hands: 42 * 4 = 168
+- Face: 468 * 3 = 1404
+- Pose: 33 * 4 = 132
+- Total: 1704 dimensions
 """
 
 import cv2
@@ -61,13 +69,16 @@ class MediaPipeFeatureExtractor:
         """
         Extract all landmarks from a single frame.
         
+        Extracts comprehensive landmark data including full face landmarks
+        for non-manual markers (facial expressions, eyebrow movements, etc.).
+        
         Args:
             frame (np.ndarray): Input image frame (RGB format)
             
         Returns:
             Dict with keys:
                 - 'hands': (42, 4) - 21 pts × 2 hands × 4 values (x, y, z, confidence)
-                - 'face': (~100, 4) - Selected facial landmarks
+                - 'face': (468, 3) - Full facial landmarks (468 pts × 3 values)
                 - 'pose': (33, 4) - Body/pose landmarks
                 - 'hand_confidence': Hand detection confidence
                 - 'face_confidence': Face detection confidence
@@ -102,27 +113,17 @@ class MediaPipeFeatureExtractor:
         landmarks['hand_confidence'] = hand_confidence
         
         # ==================== FACIAL LANDMARKS ====================
-        # Select key facial landmarks (eyes, nose, mouth, jaw)
-        # Full face has 468 landmarks; we'll use ~100 key ones
-        face_landmarks = np.zeros((100, 4))  # Will pad with zeros
+        # Full 468 facial landmarks for non-manual markers
+        # These capture facial expressions, eyebrow movements, mouth shapes, etc.
+        # crucial for multilingual grammar in sign language
+        face_landmarks = np.zeros((468, 3))  # 468 points × 3 values (x, y, z)
         face_confidence = 0.0
         
         if results.face_landmarks:
-            # Key facial landmarks indices
-            key_indices = [
-                *range(0, 10),      # Silhouette start
-                *range(17, 48),     # Eyebrows and eyes
-                *range(48, 68),     # Mouth
-                *range(68, 73),     # Nose
-                *range(73, 82),     # Additional jaw points
-            ]
-            
-            for idx, i in enumerate(key_indices[:100]):
-                if i < len(results.face_landmarks.landmark):
-                    lm = results.face_landmarks.landmark[i]
-                    face_landmarks[idx] = [lm.x, lm.y, lm.z, lm.confidence]
-            
-            face_confidence = 0.5
+            for idx, lm in enumerate(results.face_landmarks.landmark):
+                if idx < 468:
+                    face_landmarks[idx] = [lm.x, lm.y, lm.z]
+            face_confidence = 0.8
         
         landmarks['face'] = face_landmarks
         landmarks['face_confidence'] = face_confidence
@@ -146,26 +147,28 @@ class MediaPipeFeatureExtractor:
         """
         Concatenate all landmarks into a single feature vector.
         
+        Updated to include full 468-point face landmarks for non-manual markers.
+        
         Args:
             landmarks (Dict): Output from extract_landmarks()
             
         Returns:
-            np.ndarray: Flattened feature vector of shape (500,)
+            np.ndarray: Flattened feature vector of shape (1704,)
                 - Hands: 42 × 4 = 168 dims
-                - Face: 100 × 4 = 400 dims
+                - Face: 468 × 3 = 1404 dims
                 - Pose: 33 × 4 = 132 dims
-                - Total: 700 dims (will trim to 500)
+                - Total: 1704 dims
         """
         
         # Flatten each component
-        hands_flat = landmarks['hands'].flatten()  # 168 dims
-        face_flat = landmarks['face'].flatten()    # 400 dims
-        pose_flat = landmarks['pose'].flatten()    # 132 dims
+        hands_flat = landmarks['hands'].flatten()  # 168 dims (42 * 4)
+        face_flat = landmarks['face'].flatten()    # 1404 dims (468 * 3)
+        pose_flat = landmarks['pose'].flatten()    # 132 dims (33 * 4)
         
-        # Concatenate
-        feature_vector = np.concatenate([hands_flat, face_flat[:332]])  # 500 dims total
+        # Concatenate all features
+        feature_vector = np.concatenate([hands_flat, face_flat, pose_flat])
         
-        return feature_vector
+        return feature_vector  # Total: 1704 dims
     
     def extract_sequence(self, video_path: str, num_frames: int = 30) -> np.ndarray:
         """
@@ -176,7 +179,7 @@ class MediaPipeFeatureExtractor:
             num_frames (int): Number of frames to extract
             
         Returns:
-            np.ndarray: Shape (num_frames, 500) - sequence of feature vectors
+            np.ndarray: Shape (num_frames, 1704) - sequence of feature vectors
         """
         
         cap = cv2.VideoCapture(video_path)
@@ -196,8 +199,9 @@ class MediaPipeFeatureExtractor:
         
         # Pad with zeros if not enough frames
         while len(sequence) < num_frames:
-            sequence.append(np.zeros(500))
+            sequence.append(np.zeros(1704))
         
+        return np.array(sequence[:num_frames], dtype=np.float32)
         return np.array(sequence[:num_frames])
     
     def extract_from_webcam(self, duration_seconds: int = 5, num_frames: int = 30) -> np.ndarray:
